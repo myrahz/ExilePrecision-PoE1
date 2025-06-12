@@ -13,12 +13,19 @@ namespace ExilePrecision.Core.Combat.Skills
         private readonly GameController _gameController;
         private readonly KeyHandler _keyHandler;
         private readonly Dictionary<string, ActiveSkill> _skills = new();
+        private readonly Dictionary<string, ActiveSkill> _movementSkills = new();
 
         public SkillHandler(GameController gameController)
         {
             _gameController = gameController;
             _keyHandler = new KeyHandler();
         }
+
+        private readonly string[] MovementSkills = new[]
+        {
+            "Move", "Dash", "FlameDash", "FrostBlink", "LightningWarp", "ShieldCharge", "LeapSlam",
+            "WhirlingBlades"
+        };
 
         public void Initialize()
         {
@@ -30,7 +37,15 @@ namespace ExilePrecision.Core.Combat.Skills
                     existingSkills[skill.Name] = skill;
                 }
 
+                var existingMovementSkills = new Dictionary<string, ActiveSkill>();
+                foreach (var skill in ExilePrecision.Instance.Settings.Combat.MovementSkills.Content)
+                {
+                    existingMovementSkills[skill.Name] = skill;
+                }
+
                 _skills.Clear();
+                _movementSkills.Clear();
+
                 var skillBar = _gameController.IngameState.IngameUi.SkillBar;
                 var shortcuts = _gameController.IngameState.ShortcutSettings.Shortcuts;
 
@@ -47,30 +62,84 @@ namespace ExilePrecision.Core.Combat.Skills
                             continue;
 
                         ActiveSkill activeSkill;
-                        if (existingSkills.TryGetValue(skill.Name, out var existingSkill))
+                        if (MovementSkills.Contains(skill.Name))
                         {
-                            activeSkill = existingSkill;
-                            activeSkill.Skill = skill;
-                            activeSkill.Id = skill.Id;
-                            activeSkill.InternalId = skill.Id2;
+                            if(existingMovementSkills.TryGetValue(skill.Name, out var existingMovementSkill))
+                            {
+                                activeSkill = existingMovementSkill;
+                                activeSkill.Skill = skill;
+                                activeSkill.Id = skill.Id;
+                                activeSkill.InternalId = skill.Id2;
+                            }
+                            else
+                            {
+                                activeSkill = new ActiveSkill
+                                {
+                                    Skill = skill,
+                                    Key = new HotkeyNode(key),
+                                    Name = skill.Name,
+                                    Id = skill.Id,
+                                    InternalId = skill.Id2,
+                                    Enabled = new ToggleNode(true),
+                                    UseClick = new ToggleNode(false),
+                                    ExtraDelay = new RangeNode<int>(0, 0, 5000),
+                                    LineOfSightType = new ListNode()
+                                };
+                            }
 
+                            activeSkill.LineOfSightType.SetListValues(
+                            [
+                                "Walkable"
+                            ]);
+
+                            if (activeSkill.LineOfSightType.Value == null || activeSkill.LineOfSightType.Value == "")
+                            {
+                                activeSkill.LineOfSightType.Value = activeSkill.LineOfSightType.Values[0];
+                            }
+
+                            _movementSkills[skill.Name] = activeSkill;
                         }
                         else
                         {
-                            activeSkill = new ActiveSkill
+                            if (existingSkills.TryGetValue(skill.Name, out var existingSkill))
                             {
-                                Skill = skill,
-                                Key = new HotkeyNode(key),
-                                Name = skill.Name,
-                                Id = skill.Id,
-                                InternalId = skill.Id2,
-                                Enabled = new ToggleNode(true),
-                                UseClick = new ToggleNode(false),
-                                ExtraDelay = new RangeNode<int>(0, 0, 5000)
-                            };
-                        }
+                                activeSkill = existingSkill;
+                                activeSkill.Skill = skill;
+                                activeSkill.Id = skill.Id;
+                                activeSkill.InternalId = skill.Id2;
+                            }
+                            else
+                            {
+                                activeSkill = new ActiveSkill
+                                {
+                                    Skill = skill,
+                                    Key = new HotkeyNode(key),
+                                    Name = skill.Name,
+                                    Id = skill.Id,
+                                    InternalId = skill.Id2,
+                                    Enabled = new ToggleNode(true),
+                                    UseClick = new ToggleNode(false),
+                                    ExtraDelay = new RangeNode<int>(0, 0, 5000),
+                                    LineOfSightType = new ListNode()
+                                };
+                            }
 
-                        _skills[skill.Name] = activeSkill;
+                            if (activeSkill.LineOfSightType.Values.Count == 0)
+                            {
+                                activeSkill.LineOfSightType.SetListValues(
+                                [
+                                    "Walkable",
+                                    "Targetable (Can shoot over but not walk through)"
+                                ]);
+                            }
+
+                            if (activeSkill.LineOfSightType.Value == null || activeSkill.LineOfSightType.Value == "")
+                            {
+                                activeSkill.LineOfSightType.Value = activeSkill.LineOfSightType.Values[1];
+                            }
+
+                            _skills[skill.Name] = activeSkill;
+                        }
                     }
                     catch (Exception ex)
                     {
@@ -82,6 +151,12 @@ namespace ExilePrecision.Core.Combat.Skills
                 foreach (var skill in _skills.Values)
                 {
                     ExilePrecision.Instance.Settings.Combat.Skills.Content.Add(skill);
+                }
+
+                ExilePrecision.Instance.Settings.Combat.MovementSkills.Content.Clear();
+                foreach (var skill in _movementSkills.Values)
+                {
+                    ExilePrecision.Instance.Settings.Combat.MovementSkills.Content.Add(skill);
                 }
             }
             catch (Exception ex)
@@ -118,6 +193,27 @@ namespace ExilePrecision.Core.Combat.Skills
             }
         }
 
+        public bool UseMovementSkill(string skillName, bool force = false)
+        {
+            if (!_movementSkills.TryGetValue(skillName, out var skill))
+                return false;
+            if (!force && !skill.CanUse)
+                return false;
+            try
+            {
+                if (skill.UseClick)
+                    _keyHandler.SinglePress(skill.Key);
+                else
+                    _keyHandler.Hold(skill.Key);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                DebugWindow.LogError($"[SkillHandler] Error using movement skill {skillName}: {ex.Message}");
+                return false;
+            }
+        }
+
         public void ReleaseSkill(string skillName)
         {
             if (_skills.TryGetValue(skillName, out var skill))
@@ -136,7 +232,7 @@ namespace ExilePrecision.Core.Combat.Skills
             _keyHandler.ReleaseAll();
         }
 
-        public IReadOnlyCollection<ActiveSkill> GetAllSkills() => _skills.Values;
+        public IReadOnlyCollection<ActiveSkill> GetAllSkills() => _skills.Values.Where(s => s.Enabled).ToList();
 
         public void Dispose()
         {

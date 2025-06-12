@@ -104,7 +104,7 @@ namespace ExilePrecision.Features.Rendering
             var debugInfo = new List<string>
             {
                 $"State: {state}",
-                $"Cursor Pos: {ExileCore.Input.MousePosition}"
+                $"Cursor Pos: {ExileCore.Input.MousePositionNum}"
             };
 
             if (currentTarget != null && currentTarget.IsValid && currentTarget.IsAlive)

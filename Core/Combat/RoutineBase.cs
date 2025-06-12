@@ -10,6 +10,7 @@ using ExilePrecision.Features.Rendering;
 using ExilePrecision.Core.Events;
 using ExilePrecision.Core.Events.Events;
 using ExileCore.PoEMemory.MemoryObjects;
+using System.Collections.Generic;
 
 namespace ExilePrecision.Core.Combat
 {
@@ -139,7 +140,7 @@ namespace ExilePrecision.Core.Combat
 
         protected bool IsCursorOnTarget(EntityInfo target)
         {
-            var cursorPos = new Vector2(GameController.IngameState.MousePosX, GameController.IngameState.MousePosY);//ExileCore.Input.MousePosition;
+            var cursorPos = new Vector2(GameController.IngameState.MousePosX, GameController.IngameState.MousePosY);
             var targetPos = GameController.IngameState.Camera.WorldToScreen(target.Pos);
 
             return Vector2.Distance(cursorPos, targetPos) <= ExilePrecision.Instance.Settings.Combat.CombatRange.Value;

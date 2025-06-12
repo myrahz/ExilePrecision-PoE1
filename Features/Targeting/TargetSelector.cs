@@ -10,16 +10,19 @@ using ExilePrecision.Features.Targeting.Priority;
 using ExilePrecision.Features.Targeting.Density;
 using ExilePrecision.Utils;
 using ExilePrecision.Settings;
+using System.Collections.Generic;
+using ExilePrecision.Core.Combat.Skills;
 
 namespace ExilePrecision.Features.Targeting
 {
-    public class TargetSelector
+    public class TargetSelector : IDisposable
     {
         private readonly GameController _gameController;
         private readonly EntityScanner _entityScanner;
         private readonly PriorityCalculator _priorityCalculator;
         private readonly DensityAnalyzer _densityAnalyzer;
         private readonly LineOfSight _lineOfSight;
+        private readonly TargetingSettingsMonitor _settingsMonitor;
 
         private Entity _currentTarget;
         private DateTime _lastSelectionTime;
@@ -41,6 +44,9 @@ namespace ExilePrecision.Features.Targeting
             _priorityCalculator = priorityCalculator;
             _densityAnalyzer = new DensityAnalyzer(gameController, lineOfSight);
             _lineOfSight = lineOfSight;
+            
+            _settingsMonitor = new TargetingSettingsMonitor(ExilePrecision.Instance.Settings.Targeting);
+            _settingsMonitor.OnSettingsChanged += () => Configure();
         }
 
         public void Configure()
@@ -68,6 +74,8 @@ namespace ExilePrecision.Features.Targeting
                 maxTargetDistance: ExilePrecision.Instance.Settings.Targeting.MaxTargetRange,
                 preferHigherHealth: priorities.Health.PreferHigherHealth
             );
+
+            _currentTarget = null;
         }
 
         public void Update()
@@ -81,13 +89,32 @@ namespace ExilePrecision.Features.Targeting
 
                 var entities = _entityScanner.GetEntitiesInRange(_maxTargetDistance);
                 _priorityCalculator.UpdatePriorities(entities);
-                _densityAnalyzer.Update(entities);
+                _densityAnalyzer.Update(entities, new List<LineOfSightDataType> { LineOfSightDataType.Terrain });
 
                 UpdateTargetSelection(playerPos);
             }
             catch (Exception ex)
             {
                 DebugWindow.LogError($"[TargetSelector] Error during update: {ex.Message}");
+            }
+        }
+
+        public void Update(IReadOnlyCollection<ActiveSkill> skills)
+        {
+            if (_gameController?.Player == null) return;
+            try
+            {
+                var playerPos = _gameController.Player.GridPosNum;
+                _entityScanner.Scan(skills);
+                var entities = _entityScanner.GetEntitiesInRange(_maxTargetDistance);
+                _priorityCalculator.UpdatePriorities(entities);
+                var losTypes = skills.Select(s => LineOfSight.Parse(s.LineOfSightType.Value)).Distinct().ToList();
+                _densityAnalyzer.Update(entities, losTypes);
+                UpdateTargetSelection(playerPos);
+            }
+            catch (Exception ex)
+            {
+                DebugWindow.LogError($"[TargetSelector] Error during update with skills: {ex.Message}");
             }
         }
 
@@ -162,6 +189,19 @@ namespace ExilePrecision.Features.Targeting
             }
         }
 
+        public List<Entity> GetValidTargets(ActiveSkill skill)
+        {
+            var entities = _entityScanner.GetEntitiesInRange(_maxTargetDistance);
+            var losType = LineOfSight.Parse(skill.LineOfSightType.Value);
+
+            return entities.Where(e =>
+            {
+                if (!IsTargetValid(e)) return false;
+                var hasLos = _entityScanner.GetEntityLineOfSight(e, losType);
+                return hasLos.HasValue && hasLos.Value;
+            }).ToList();
+        }
+
         private Entity FindBestTarget(System.Collections.Generic.IEnumerable<Entity> entities, Vector2 playerPos)
         {
             Entity bestTarget = null;
@@ -231,82 +271,56 @@ namespace ExilePrecision.Features.Targeting
 
         private float CalculateDensityBonus(DensityInfo density)
         {
-            if (density == null || density.Entities.Count < 3) return 0f;
-
-            var normalizedScore = Math.Min(density.DensityScore, 1.0f);
-            var bonus = _baseClusterBonus + (normalizedScore * (_maxClusterBonus - _baseClusterBonus));
-
+            var densitySettings = ExilePrecision.Instance.Settings.Targeting.Density;
+            float bonus = _baseClusterBonus + (_maxClusterBonus - _baseClusterBonus) *
+                ((float)density.Entities.Count / densitySettings.MinClusterSize);
             return Math.Min(bonus, _maxClusterBonus);
         }
 
         private bool ShouldSwitchTarget(Entity newTarget)
         {
             if (_currentTarget == null) return true;
-            if (_currentTarget == newTarget) return false;
+            if (newTarget.Address == _currentTarget.Address) return false;
 
-            var currentWeight = CalculateFinalWeight(_currentTarget);
             var newWeight = CalculateFinalWeight(newTarget);
+            var currentWeight = CalculateFinalWeight(_currentTarget);
 
             return newWeight > currentWeight + _minWeightDifferenceForSwitch;
         }
 
         private void HandleTargetLost()
         {
-            if (_currentTarget == null) return;
-
-            EventBus.Instance.Publish(new TargetLostEvent(
-                _currentTarget,
-                "Target no longer valid",
-                _currentTarget.GridPosNum));
-
-            _currentTarget = null;
+            if (_currentTarget != null)
+            {
+                EventBus.Instance.Publish(new TargetLostEvent(
+                    _currentTarget,
+                    "Target is no longer valid or in range",
+                    _currentTarget.GridPosNum));
+                _currentTarget = null;
+            }
         }
 
         private bool IsTargetValid(Entity entity)
         {
-            if (entity == null) return false;
-            if (!entity.IsValid) return false;
-            if (!entity.IsAlive) return false;
-            if (entity.IsDead) return false;
-            if (!entity.IsTargetable) return false;
-            if (entity.IsHidden) return false;
-
-            try
-            {
-                var playerPos = _gameController.Player.GridPosNum;
-                var targetPos = entity.GridPosNum;
-
-                return _lineOfSight.HasLineOfSight(playerPos, targetPos);
-            }
-            catch
-            {
+            if (entity == null || !entity.IsValid || entity.IsDead || !entity.IsAlive || !entity.IsTargetable)
                 return false;
-            }
-        }
 
-        public Entity GetCurrentTarget()
-        {
-            return _currentTarget;
+            var distance = _entityScanner.GetEntityDistance(entity);
+            return distance.HasValue && distance.Value <= _maxTargetDistance;
         }
 
         public void Clear()
         {
-            var oldTarget = _currentTarget;
             _currentTarget = null;
-            _lastSelectionTime = DateTime.MinValue;
-
-            if (oldTarget != null)
-            {
-                EventBus.Instance.Publish(new TargetLostEvent(
-                    oldTarget,
-                    "Target selector cleared",
-                    oldTarget.GridPosNum));
-            }
-
             _entityScanner.Clear();
-            _priorityCalculator.Clear();
             _densityAnalyzer.Clear();
             _lineOfSight.Clear();
+        }
+
+        public void Dispose()
+        {
+            _settingsMonitor.OnSettingsChanged -= () => Configure();
+            _settingsMonitor.Dispose();
         }
     }
 }

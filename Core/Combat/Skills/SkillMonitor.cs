@@ -1,4 +1,5 @@
-﻿using System;
+﻿using ExileCore;
+using System;
 using System.Collections.Generic;
 
 namespace ExilePrecision.Core.Combat.Skills
@@ -31,7 +32,7 @@ namespace ExilePrecision.Core.Combat.Skills
         {
             if (skill == null || !skill.CanUse)
                 return false;
-
+            
             if (!_skillUsage.TryGetValue(skill.Name, out var usage))
                 return true;
 

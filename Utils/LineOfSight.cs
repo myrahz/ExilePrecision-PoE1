@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Drawing;
 using System.Numerics;
+using System.Threading.Tasks;
 using ExileCore;
 using ExileCore.Shared.Enums;
 using ExileCore.Shared.Helpers;
@@ -11,10 +12,17 @@ using Graphics = ExileCore.Graphics;
 
 namespace ExilePrecision.Utils
 {
+    public enum LineOfSightDataType
+    {
+        Terrain,
+        Walkable
+    }
+
     public class LineOfSight
     {
         private readonly GameController _gameController;
         private int[][] _terrainData;
+        private int[][] _walkableData;
         private Vector2 _areaDimensions;
         private const int TARGET_LAYER_VALUE = 4;
 
@@ -22,6 +30,7 @@ namespace ExilePrecision.Utils
         private readonly List<(Vector2 Start, Vector2 End, bool IsVisible)> _debugRays = new();
         private readonly HashSet<Vector2> _debugVisiblePoints = new();
         private float _lastObserverZ;
+        private Vector2 _lastDebugGridCenter;
 
         public LineOfSight(GameController gameController)
         {
@@ -35,14 +44,19 @@ namespace ExilePrecision.Utils
         private void HandleRender(RenderEvent evt)
         {
             if (!ExilePrecision.Instance.Settings.Render.EnableRendering) return;
-            if (!ExilePrecision.Instance.Settings.Render.ShowTerrainDebug) return;
+            if (!ExilePrecision.Instance.Settings.Render.ShowTerrainDebug && !ExilePrecision.Instance.Settings.Render.ShowWalkableDebug) return;
 
             if (_terrainData == null)
             {
                 return;
             }
 
-            UpdateDebugGrid(_gameController.Player.GridPosNum);
+            var playerGridPos = _gameController.Player.GridPosNum;
+            if (Vector2.DistanceSquared(playerGridPos, _lastDebugGridCenter) >= 20) // dont update too frequently
+            {
+                var losType = ExilePrecision.Instance.Settings.Render.ShowWalkableDebug ? LineOfSightDataType.Walkable : LineOfSightDataType.Terrain;
+                UpdateDebugGrid(playerGridPos, losType);
+            }
 
             foreach (var (pos, value) in _debugPoints)
             {
@@ -80,21 +94,30 @@ namespace ExilePrecision.Utils
         private void HandleAreaChange(AreaChangeEvent evt)
         {
             _areaDimensions = _gameController.IngameState.Data.AreaDimensions;
-            var rawData = _gameController.IngameState.Data.RawTerrainTargetingData;
+            var rawTargetingData = _gameController.IngameState.Data.RawTerrainTargetingData;
+            var rawWalkableData = _gameController.IngameState.Data.RawPathfindingData;
 
-            _terrainData = new int[rawData.Length][];
-            for (var y = 0; y < rawData.Length; y++)
+            _terrainData = new int[rawTargetingData.Length][];
+            Parallel.For(0, rawTargetingData.Length, y =>
             {
-                _terrainData[y] = new int[rawData[y].Length];
-                Array.Copy(rawData[y], _terrainData[y], rawData[y].Length);
-            }
+                _terrainData[y] = new int[rawTargetingData[y].Length];
+                Array.Copy(rawTargetingData[y], _terrainData[y], rawTargetingData[y].Length);
+            });
 
-            UpdateDebugGrid(_gameController.Player.GridPosNum);
+            _walkableData = new int[rawWalkableData.Length][];
+            Parallel.For(0, rawWalkableData.Length, y =>
+            {
+                _walkableData[y] = new int[rawWalkableData[y].Length];
+                Array.Copy(rawWalkableData[y], _walkableData[y], rawWalkableData[y].Length);
+            });
+
+            UpdateDebugGrid(_gameController.Player.GridPosNum, LineOfSightDataType.Terrain);
         }
 
-        private void UpdateDebugGrid(Vector2 center)
+        private void UpdateDebugGrid(Vector2 center, LineOfSightDataType losType)
         {
             _debugPoints.Clear();
+            _lastDebugGridCenter = center;
             const int size = 200;
 
             for (var y = -size; y <= size; y++)
@@ -103,7 +126,7 @@ namespace ExilePrecision.Utils
                     if (x * x + y * y > size * size) continue;
 
                     var pos = new Vector2(center.X + x, center.Y + y);
-                    var value = GetTerrainValue(pos);
+                    var value = GetValue(pos, losType);
                     if (value >= 0) _debugPoints.Add((pos, value));
                 }
 
@@ -112,19 +135,24 @@ namespace ExilePrecision.Utils
 
         public bool HasLineOfSight(Vector2 start, Vector2 end)
         {
+            return HasLineOfSight(start, end, LineOfSightDataType.Terrain);
+        }
+
+        public bool HasLineOfSight(Vector2 start, Vector2 end, LineOfSightDataType losType)
+        {
             if (_terrainData == null) return false;
 
             // Update debug visualization
             _debugVisiblePoints.Clear();
-            UpdateDebugGrid(start);
+            UpdateDebugGrid(start, losType);
 
-            var isVisible = HasLineOfSightInternal(start, end);
+            var isVisible = HasLineOfSightInternal(start, end, losType);
             _debugRays.Add((start, end, isVisible));
 
             return isVisible;
         }
 
-        private bool HasLineOfSightInternal(Vector2 start, Vector2 end)
+        private bool HasLineOfSightInternal(Vector2 start, Vector2 end, LineOfSightDataType losType)
         {
             var startX = (int)start.X;
             var startY = (int)start.Y;
@@ -138,14 +166,14 @@ namespace ExilePrecision.Utils
             var dy = Math.Abs(endY - startY);
 
             if (dx == 0)
-                return CheckVerticalLine(startX, startY, endY);
+                return CheckVerticalLine(startX, startY, endY, losType);
             if (dy == 0)
-                return CheckHorizontalLine(startY, startX, endX);
+                return CheckHorizontalLine(startY, startX, endX, losType);
 
-            return CheckDiagonalLine(start, end, dx, dy);
+            return CheckDiagonalLine(start, end, dx, dy, losType);
         }
 
-        private bool CheckVerticalLine(int x, int startY, int endY)
+        private bool CheckVerticalLine(int x, int startY, int endY, LineOfSightDataType losType)
         {
             var step = Math.Sign(endY - startY);
             var y = startY;
@@ -154,7 +182,7 @@ namespace ExilePrecision.Utils
             {
                 y += step;
                 var pos = new Vector2(x, y);
-                var terrainValue = GetTerrainValue(pos);
+                var terrainValue = GetValue(pos, losType);
                 _debugVisiblePoints.Add(pos);
 
                 if (terrainValue < TARGET_LAYER_VALUE) continue;
@@ -164,7 +192,7 @@ namespace ExilePrecision.Utils
             return true;
         }
 
-        private bool CheckHorizontalLine(int y, int startX, int endX)
+        private bool CheckHorizontalLine(int y, int startX, int endX, LineOfSightDataType losType)
         {
             var step = Math.Sign(endX - startX);
             var x = startX;
@@ -173,7 +201,7 @@ namespace ExilePrecision.Utils
             {
                 x += step;
                 var pos = new Vector2(x, y);
-                var terrainValue = GetTerrainValue(pos);
+                var terrainValue = GetValue(pos, losType);
                 _debugVisiblePoints.Add(pos);
 
                 if (terrainValue < TARGET_LAYER_VALUE) continue;
@@ -183,7 +211,7 @@ namespace ExilePrecision.Utils
             return true;
         }
 
-        private bool CheckDiagonalLine(Vector2 start, Vector2 end, float dx, float dy)
+        private bool CheckDiagonalLine(Vector2 start, Vector2 end, float dx, float dy, LineOfSightDataType losType)
         {
             var x = (int)start.X;
             var y = (int)start.Y;
@@ -207,7 +235,7 @@ namespace ExilePrecision.Utils
                     }
 
                     var pos = new Vector2(x, y);
-                    var terrainValue = GetTerrainValue(pos);
+                    var terrainValue = GetValue(pos, losType);
                     _debugVisiblePoints.Add(pos);
 
                     if (terrainValue < TARGET_LAYER_VALUE) continue;
@@ -231,7 +259,7 @@ namespace ExilePrecision.Utils
                     }
 
                     var pos = new Vector2(x, y);
-                    var terrainValue = GetTerrainValue(pos);
+                    var terrainValue = GetValue(pos, losType);
                     _debugVisiblePoints.Add(pos);
 
                     if (terrainValue < TARGET_LAYER_VALUE) continue;
@@ -247,18 +275,34 @@ namespace ExilePrecision.Utils
             return x >= 0 && x < _areaDimensions.X && y >= 0 && y < _areaDimensions.Y;
         }
 
-        private int GetTerrainValue(Vector2 position)
+        private int GetValue(Vector2 position, LineOfSightDataType losType)
         {
             var x = (int)position.X;
             var y = (int)position.Y;
 
             if (!IsInBounds(x, y)) return -1;
-            return _terrainData[y][x];
+
+            return losType switch
+            {
+                LineOfSightDataType.Terrain => _terrainData[y][x],
+                LineOfSightDataType.Walkable => _walkableData[y][x],
+                _ => -1
+            };
+        }
+
+        public static LineOfSightDataType Parse(string type)
+        {
+            return type switch
+            {
+                "Walkable" => LineOfSightDataType.Walkable,
+                _ => LineOfSightDataType.Terrain
+            };
         }
 
         public void Clear()
         {
             _terrainData = null;
+            _walkableData = null;
             _debugPoints.Clear();
             _debugRays.Clear();
             _debugVisiblePoints.Clear();

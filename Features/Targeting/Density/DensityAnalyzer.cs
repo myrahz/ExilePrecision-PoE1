@@ -37,7 +37,7 @@ namespace ExilePrecision.Features.Targeting.Density
             _requireLineOfSight = requireLineOfSight;
         }
 
-        public void Update(IEnumerable<Entity> entities)
+        public void Update(IEnumerable<Entity> entities, IReadOnlyCollection<LineOfSightDataType> losTypes)
         {
             if (_gameController?.Player == null) return;
 
@@ -47,7 +47,7 @@ namespace ExilePrecision.Features.Targeting.Density
             try
             {
                 var playerPos = _gameController.Player.GridPosNum;
-                var validEntities = FilterEntities(entities, playerPos);
+                var validEntities = FilterEntities(entities, playerPos, losTypes);
                 var clusters = FindDensityClusters(validEntities, playerPos);
 
                 lock (_lock)
@@ -59,7 +59,6 @@ namespace ExilePrecision.Features.Targeting.Density
                     }
                 }
 
-                // Publish density update event - Currently not used
                 EventBus.Instance.Publish(new DensityUpdatedEvent
                 {
                     Densities = clusters.ToList()
@@ -73,7 +72,7 @@ namespace ExilePrecision.Features.Targeting.Density
             }
         }
 
-        private IEnumerable<Entity> FilterEntities(IEnumerable<Entity> entities, Vector2 playerPos)
+        private IEnumerable<Entity> FilterEntities(IEnumerable<Entity> entities, Vector2 playerPos, IReadOnlyCollection<LineOfSightDataType> losTypes)
         {
             return entities.Where(entity =>
             {
@@ -84,8 +83,11 @@ namespace ExilePrecision.Features.Targeting.Density
                 var distance = Vector2.Distance(playerPos, entity.GridPosNum);
                 if (distance > _maxRadius * 2) return false;
 
-                if (_requireLineOfSight && !_lineOfSight.HasLineOfSight(playerPos, entity.GridPosNum))
-                    return false;
+                if (_requireLineOfSight)
+                {
+                    if (!losTypes.Any(losType => _lineOfSight.HasLineOfSight(playerPos, entity.GridPosNum, losType)))
+                        return false;
+                }
 
                 return true;
             });

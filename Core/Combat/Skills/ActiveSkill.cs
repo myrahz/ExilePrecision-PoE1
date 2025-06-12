@@ -35,6 +35,9 @@ namespace ExilePrecision.Core.Combat.Skills
         [Menu("Additional Delay (ms)", "Extra delay to add between skill uses")]
         public RangeNode<int> ExtraDelay { get; set; } = new(0, 0, 5000);
 
+        public ListNode LineOfSightType { get; set; } = new ListNode();
+
         public override string ToString() => $"{Name}";
     }
 }
+

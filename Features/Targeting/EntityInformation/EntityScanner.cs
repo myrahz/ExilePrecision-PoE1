@@ -6,6 +6,7 @@ using ExileCore;
 using ExileCore.PoEMemory.Components;
 using ExileCore.PoEMemory.MemoryObjects;
 using ExileCore.Shared.Enums;
+using ExilePrecision.Core.Combat.Skills;
 using ExilePrecision.Core.Events;
 using ExilePrecision.Core.Events.Events;
 using ExilePrecision.Utils;
@@ -18,7 +19,7 @@ namespace ExilePrecision.Features.Targeting.EntityInformation
         private readonly LineOfSight _lineOfSight;
         private readonly HashSet<Entity> _trackedEntities;
         private readonly Dictionary<Entity, float> _entityDistances;
-        private readonly Dictionary<Entity, bool> _entityLineOfSight;
+        private readonly Dictionary<Entity, Dictionary<LineOfSightDataType, bool>> _entityLineOfSight;
         private readonly Dictionary<Entity, DateTime> _lastSeenTimes;
         private readonly object _lock = new();
 
@@ -32,7 +33,7 @@ namespace ExilePrecision.Features.Targeting.EntityInformation
             _lineOfSight = lineOfSight;
             _trackedEntities = new HashSet<Entity>();
             _entityDistances = new Dictionary<Entity, float>();
-            _entityLineOfSight = new Dictionary<Entity, bool>();
+            _entityLineOfSight = new Dictionary<Entity, Dictionary<LineOfSightDataType, bool>>();
             _lastSeenTimes = new Dictionary<Entity, DateTime>();
             _maxScanRange = 100f;
             _lastFullScan = DateTime.MinValue;
@@ -61,13 +62,39 @@ namespace ExilePrecision.Features.Targeting.EntityInformation
 
             if (ShouldPerformFullScan(playerPosition, currentTime))
             {
-                PerformFullScan(playerPosition, currentTime);
+                PerformFullScan(playerPosition, currentTime, new List<LineOfSightDataType> { LineOfSightDataType.Terrain });
                 _lastPlayerPosition = playerPosition;
                 _lastFullScan = currentTime;
             }
             else
             {
-                UpdateTrackedEntities(playerPosition, currentTime);
+                UpdateTrackedEntities(playerPosition, currentTime, new List<LineOfSightDataType> { LineOfSightDataType.Terrain });
+            }
+
+            CleanupStaleEntities(currentTime);
+        }
+
+        public void Scan(IReadOnlyCollection<ActiveSkill> skills)
+        {
+            if (_gameController?.Player == null) return;
+
+            var currentTime = DateTime.UtcNow;
+            var playerPosition = _gameController.Player.GridPosNum;
+
+            var requiredLosTypes = skills
+                .Select(s => LineOfSight.Parse(s.LineOfSightType.Value))
+                .Distinct()
+                .ToList();
+
+            if (ShouldPerformFullScan(playerPosition, currentTime))
+            {
+                PerformFullScan(playerPosition, currentTime, requiredLosTypes);
+                _lastPlayerPosition = playerPosition;
+                _lastFullScan = currentTime;
+            }
+            else
+            {
+                UpdateTrackedEntities(playerPosition, currentTime, requiredLosTypes);
             }
 
             CleanupStaleEntities(currentTime);
@@ -81,9 +108,13 @@ namespace ExilePrecision.Features.Targeting.EntityInformation
             return Vector2.Distance(_lastPlayerPosition, currentPlayerPos) > 10f;
         }
 
-        private void PerformFullScan(Vector2 playerPosition, DateTime currentTime)
+        private void PerformFullScan(Vector2 playerPosition, DateTime currentTime, List<LineOfSightDataType> losTypes)
         {
-            var validMonsters = _gameController.EntityListWrapper.ValidEntitiesByType[EntityType.Monster];
+            if (!_gameController.EntityListWrapper.ValidEntitiesByType.TryGetValue(EntityType.Monster, out var validMonsters))
+            {
+                validMonsters = new List<Entity>();
+            }
+            
             var newEntities = new HashSet<Entity>();
 
             foreach (var entity in validMonsters)
@@ -94,7 +125,7 @@ namespace ExilePrecision.Features.Targeting.EntityInformation
                 if (distance > _maxScanRange) continue;
 
                 newEntities.Add(entity);
-                UpdateEntityTracking(entity, distance, currentTime, playerPosition);
+                UpdateEntityTracking(entity, distance, currentTime, playerPosition, losTypes);
             }
 
             var removedEntities = _trackedEntities.Except(newEntities).ToList();
@@ -110,7 +141,7 @@ namespace ExilePrecision.Features.Targeting.EntityInformation
             }
         }
 
-        private void UpdateTrackedEntities(Vector2 playerPosition, DateTime currentTime)
+        private void UpdateTrackedEntities(Vector2 playerPosition, DateTime currentTime, List<LineOfSightDataType> losTypes)
         {
             var invalidEntities = new List<Entity>();
 
@@ -125,7 +156,7 @@ namespace ExilePrecision.Features.Targeting.EntityInformation
                     }
 
                     var distance = Vector2.Distance(playerPosition, entity.GridPosNum);
-                    UpdateEntityTracking(entity, distance, currentTime, playerPosition);
+                    UpdateEntityTracking(entity, distance, currentTime, playerPosition, losTypes);
                 }
 
                 foreach (var entity in invalidEntities)
@@ -135,18 +166,34 @@ namespace ExilePrecision.Features.Targeting.EntityInformation
             }
         }
 
-        private void UpdateEntityTracking(Entity entity, float distance, DateTime currentTime, Vector2 playerPosition)
+        private void UpdateEntityTracking(Entity entity, float distance, DateTime currentTime, Vector2 playerPosition, IReadOnlyCollection<LineOfSightDataType> losTypes)
         {
             bool isNewEntity = !_entityDistances.ContainsKey(entity);
             float? oldDistance = isNewEntity ? null : _entityDistances[entity];
-            bool hadLineOfSight = _entityLineOfSight.TryGetValue(entity, out var previousLoS) ? previousLoS : false;
 
-            var currentLoS = CheckLineOfSight(entity, playerPosition);
+            bool losChanged = false;
+            if (!_entityLineOfSight.TryGetValue(entity, out var currentLoSStates))
+            {
+                currentLoSStates = new Dictionary<LineOfSightDataType, bool>();
+                _entityLineOfSight[entity] = currentLoSStates;
+            }
+
+            foreach (var losType in losTypes)
+            {
+                var hadLineOfSight = currentLoSStates.TryGetValue(losType, out var previousLoS) && previousLoS;
+                var currentLoS = CheckLineOfSight(entity, playerPosition, losType);
+                currentLoSStates[losType] = currentLoS;
+
+                if (hadLineOfSight != currentLoS)
+                {
+                    losChanged = true;
+                    EventBus.Instance.Publish(new TargetInLineOfSightEvent(entity, currentLoS, entity.GridPosNum, distance));
+                }
+            }
 
             lock (_lock)
             {
                 _entityDistances[entity] = distance;
-                _entityLineOfSight[entity] = currentLoS;
                 _lastSeenTimes[entity] = currentTime;
             }
 
@@ -158,17 +205,8 @@ namespace ExilePrecision.Features.Targeting.EntityInformation
                     Distance = distance
                 });
             }
-            else if (oldDistance.HasValue && (Math.Abs(oldDistance.Value - distance) > 5f || hadLineOfSight != currentLoS))
+            else if (oldDistance.HasValue && (Math.Abs(oldDistance.Value - distance) > 5f || losChanged))
             {
-                if (hadLineOfSight != currentLoS)
-                {
-                    EventBus.Instance.Publish(new TargetInLineOfSightEvent(
-                        entity,
-                        currentLoS,
-                        entity.GridPosNum,
-                        distance));
-                }
-
                 EventBus.Instance.Publish(new TargetStateChangedEvent(
                     entity,
                     entity.IsAlive,
@@ -239,7 +277,7 @@ namespace ExilePrecision.Features.Targeting.EntityInformation
 
             try
             {
-                var pos = entity.GridPos;
+                var pos = entity.GridPosNum;
                 var isAlive = entity.IsAlive;
                 return true;
             }
@@ -251,25 +289,44 @@ namespace ExilePrecision.Features.Targeting.EntityInformation
 
         private bool IsImmuneToAllDamage(Entity entity)
         {
-            if (!entity.Stats.TryGetValue(GameStat.CannotBeDamaged, out var value))
+            try
+            {
+                if (entity.Stats == null || entity.Stats.Count == 0)
+                    return false;
+
+                if (!entity.Stats.TryGetValue(GameStat.CannotBeDamaged, out var value))
+                    return false;
+
+                return value == 1;
+            }
+            catch (Exception)
+            {
                 return false;
-            return value == 1;
+            }
         }
 
         private float GetHealthPercentage(Entity entity)
         {
-            if (entity?.GetComponent<Life>() is not Life life)
+            try
+            {
+                if (entity?.GetComponent<Life>() is not Life life)
+                    return 0f;
+
+                return life.HPPercentage;
+            }
+            catch (Exception)
+            {
                 return 0f;
-            return life.HPPercentage;
+            }
         }
 
-        private bool CheckLineOfSight(Entity entity, Vector2 playerPos)
+        private bool CheckLineOfSight(Entity entity, Vector2 playerPos, LineOfSightDataType losType)
         {
             if (entity == null) return false;
 
             try
             {
-                return _lineOfSight.HasLineOfSight(playerPos, entity.GridPosNum);
+                return _lineOfSight.HasLineOfSight(playerPos, entity.GridPosNum, losType);
             }
             catch (Exception)
             {
@@ -296,11 +353,18 @@ namespace ExilePrecision.Features.Targeting.EntityInformation
             }
         }
 
-        public bool? GetEntityLineOfSight(Entity entity)
+        public bool? GetEntityLineOfSight(Entity entity, LineOfSightDataType losType)
         {
             lock (_lock)
             {
-                return _entityLineOfSight.TryGetValue(entity, out bool los) ? los : null;
+                if (_entityLineOfSight.TryGetValue(entity, out var losStates))
+                {
+                    if (losStates.TryGetValue(losType, out bool los))
+                    {
+                        return los;
+                    }
+                }
+                return null;
             }
         }
 

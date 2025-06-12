@@ -1,10 +1,13 @@
-﻿using System;
-using System.Numerics;
-using ExileCore;
+﻿using ExileCore;
+using ExilePrecision.Core.Combat.Skills;
 using ExilePrecision.Core.Combat.State;
 using ExilePrecision.Core.Events;
 using ExilePrecision.Core.Events.Events;
 using ExilePrecision.Features.Targeting.EntityInformation;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Numerics;
 
 namespace ExilePrecision.Core.Combat
 {
@@ -52,7 +55,7 @@ namespace ExilePrecision.Core.Combat
 
             try
             {
-                var target = GetTarget();
+                var (skill, target) = GetBestAction();
 
                 if (target?.Entity?.Address != CurrentTarget?.Entity?.Address)
                 {
@@ -63,26 +66,18 @@ namespace ExilePrecision.Core.Combat
                     });
 
                     CurrentTarget = target;
-
                     SkillHandler.ReleaseAllSkills();
-
-                    if (CurrentTarget != null && !_inCombat)
-                    {
-                        BeginCombat();
-                    }
-                    else if (CurrentTarget == null && _inCombat)
-                    {
-                        EndCombat();
-                    }
                 }
 
-                if (_inCombat && CurrentTarget != null)
+                if (CurrentTarget != null && skill != null)
                 {
+                    if (!_inCombat) BeginCombat();
                     StateCoordinator.SetState(RoutineState.Active);
-                    ExecuteCombatTick();
+                    ExecuteCombatTick(skill, CurrentTarget);
                 }
                 else
                 {
+                    if (_inCombat) EndCombat();
                     StateCoordinator.SetState(RoutineState.Orbwalking);
                     Orbwalk();
                 }
@@ -95,34 +90,47 @@ namespace ExilePrecision.Core.Combat
             }
         }
 
-        protected abstract EntityInfo GetTarget();
-        protected abstract void ExecuteCombatTick();
+        protected abstract (ActiveSkill skill, EntityInfo target) GetBestAction();
+        protected abstract void ExecuteCombatTick(ActiveSkill skill, EntityInfo target);
 
-        private void BeginCombat()
+        protected void BeginCombat()
         {
             if (!_inCombat)
             {
-                //_preTargetMousePosition = ExileCore.Input.MousePosition;
+                _preTargetMousePosition = ExileCore.Input.MousePositionNum;
                 _inCombat = true;
                 SkillHandler.ReleaseAllSkills();
             }
         }
 
-        private void EndCombat()
+        protected void EndCombat()
         {
             if (_inCombat)
             {
-                //ExileCore.Input.SetCursorPos(_preTargetMousePosition);
+                ExileCore.Input.SetCursorPos(_preTargetMousePosition);
                 _inCombat = false;
                 SkillHandler.ReleaseAllSkills();
             }
         }
 
-        private void Orbwalk()
+        protected void Orbwalk()
         {
             if (!_inCombat)
             {
-                SkillHandler.UseSkill(MOVE_SKILL_NAME, true);
+                if (ExilePrecision.Instance.Settings.Combat.MovementSkills.Content.Where(x => x.Enabled).Any())
+                {
+                    var movementSkill = ExilePrecision.Instance.Settings.Combat.MovementSkills.Content
+                        .FirstOrDefault(x => x.Enabled && SkillMonitor.CanUseSkill(x));
+
+                    if (movementSkill != null)
+                    {
+                        SkillHandler.UseMovementSkill(movementSkill.Name, true);
+                        return;
+                    }
+                }
+
+
+                SkillHandler.UseMovementSkill(MOVE_SKILL_NAME, true);
             }
         }
 

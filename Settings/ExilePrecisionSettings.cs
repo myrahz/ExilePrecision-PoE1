@@ -29,6 +29,7 @@ public class RenderSettings
     public ToggleNode EnableRendering { get; set; } = new(true);
     public ToggleNode ShowDebugInfo { get; set; } = new(false);
     public ToggleNode ShowTerrainDebug { get; set; } = new(false);
+    public ToggleNode ShowWalkableDebug { get; set; } = new(false);
 
     public TargetVisualsSettings TargetVisuals { get; set; } = new();
     public UISettings Interface { get; set; } = new();
@@ -164,6 +165,12 @@ public class CombatSettings
     public RangeNode<float> CombatRange { get; set; } = new(50f, 1f, 1000f);
     public ListNode AvailableStrategies { get; set; } = new ListNode();
     public ContentNode<ActiveSkill> Skills { get; set; } = new ContentNode<ActiveSkill>()
+    {
+        EnableItemCollapsing = true,
+        EnableControls = false,
+    };
+
+    public ContentNode<ActiveSkill> MovementSkills { get; set; } = new ContentNode<ActiveSkill>()
     {
         EnableItemCollapsing = true,
         EnableControls = false,

@@ -172,7 +172,7 @@ namespace ExilePrecision.Features.Targeting.Priority
 
             try
             {
-                var pos = entity.GridPos;
+                var pos = entity.GridPosNum;
                 var isAlive = entity.IsAlive;
                 return true;
             }
