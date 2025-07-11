@@ -2,8 +2,10 @@
 using System.Collections.Generic;
 using System.Linq;
 using ExileCore;
+using ExileCore.PoEMemory.Components;
 using ExileCore.PoEMemory.Elements;
 using ExileCore.PoEMemory.MemoryObjects;
+using ExileCore.Shared.Enums;
 using ExilePrecision.Core.Combat;
 using ExilePrecision.Core.Events;
 using ExilePrecision.Core.Events.Events;
@@ -118,8 +120,27 @@ namespace ExilePrecision
                 {
                     _isToggled = !_isToggled;
                 }
+                bool shouldAttack = false;
+                if (Settings.AttackWhenLeaderIsAttacking)
+                {
+                    var leaderEntity = GameController.EntityListWrapper.ValidEntitiesByType[EntityType.Player].FirstOrDefault(x => string.Equals(x.GetComponent<Player>()?.PlayerName.ToLower(), Settings.LeaderName, StringComparison.OrdinalIgnoreCase));
+                    var leaderAnimation = leaderEntity.GetComponent<Actor>().Animation;
+                    var leaderIsAttacking = leaderEntity.GetComponent<Actor>().isAttacking;
+                    var distanceToLeader = leaderEntity.DistancePlayer;
 
-                var isActive = _isToggled || Input.GetKeyState(Settings.PrecisionKey);
+                    if (distanceToLeader < Settings.DistanceToLeaderToAttack)
+                    {
+                        shouldAttack = leaderIsAttacking && !(leaderAnimation == AnimationE.LeapSlam || leaderAnimation == AnimationE.LeapSlamOffhand || leaderAnimation == AnimationE.Charge || leaderAnimation == AnimationE.ChargeEnd);
+
+                    }
+
+
+                }
+
+
+
+
+                var isActive = _isToggled || Input.GetKeyState(Settings.PrecisionKey) || shouldAttack;
                 if (!isActive)
                 {
                     _activeRoutine?.Stop();

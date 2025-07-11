@@ -16,6 +16,9 @@ public class ExilePrecisionSettings : ISettings
 {
     public ToggleNode Enable { get; set; } = new(false);
     public ToggleNode UseTerrainTargeting { get; set; } = new(true);
+    public TextNode LeaderName { get; set; } = new("");
+    public ToggleNode AttackWhenLeaderIsAttacking { get; set; } = new(true);
+    public RangeNode<int> DistanceToLeaderToAttack { get; set; } =  new(40, 20, 200);
     public HotkeyNode PrecisionKey { get; set; } = new(Keys.None);
     public HotkeyNode PrecisionToggleKey { get; set; } = new(Keys.None);
     public RenderSettings Render { get; set; } = new();
