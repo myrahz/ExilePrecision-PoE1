@@ -7,6 +7,8 @@ using ExilePrecision.Features.Targeting.EntityInformation;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using ExilePrecision.Features.Targeting;
+using ExilePrecision.Features.Targeting.Priority;
 
 namespace ExilePrecision.Routines.Absolution.Strategy
 {
@@ -23,49 +25,36 @@ namespace ExilePrecision.Routines.Absolution.Strategy
             _gameController = gameController;
         }
 
-        public ActiveSkill GetNextSkill(
-            EntityInfo target,
+        public (ActiveSkill skill, EntityInfo target) GetBestAction(
             IReadOnlyCollection<ActiveSkill> availableSkills,
+            TargetSelector targetSelector,
+            PriorityCalculator priorityCalculator,
             SkillMonitor skillMonitor)
         {
-            var skills = availableSkills.Where(s => _trackedSkills.Contains(s.Name)).ToList();
-            if (!skills.Any() || target == null)
-                return null;
+            (ActiveSkill skill, EntityInfo target) bestAction = (null, null);
+            float maxWeight = float.MinValue;
 
-            if (target.Rarity is MonsterRarity.Unique or MonsterRarity.Rare)
-                return DetermineEliteMonsterSkill(target, skills, skillMonitor);
+            var usableSkills = availableSkills.Where(s => skillMonitor.CanUseSkill(s) && _trackedSkills.Contains(s.Name));
 
-            return DetermineNormalMonsterSkill(target, skills, skillMonitor);
-        }
+            foreach (var skill in usableSkills)
+            {
+                if (!skill.Enabled) continue;
 
-        private ActiveSkill DetermineEliteMonsterSkill(
-            EntityInfo target,
-            List<ActiveSkill> availableSkills,
-            SkillMonitor skillMonitor)
-        {
+                var validTargets = targetSelector.GetValidTargets(skill);
+                if (!validTargets.Any()) continue;
 
-            var eConc = FindSkill(availableSkills, "Absolution");
-            if (eConc != null && skillMonitor.CanUseSkill(eConc))
-                return eConc;
+                foreach (var target in validTargets)
+                {
+                    var weight = priorityCalculator.GetEntityWeight(target);
+                    if (weight.HasValue && weight.Value > maxWeight)
+                    {
+                        maxWeight = weight.Value;
+                        bestAction = (skill, new EntityInfo(target, _gameController));
+                    }
+                }
+            }
 
-            return null;
-        }
-
-        private ActiveSkill DetermineNormalMonsterSkill(
-            EntityInfo target,
-            List<ActiveSkill> availableSkills,
-            SkillMonitor skillMonitor)
-        {
-            var eConc = FindSkill(availableSkills, "Absolution");
-            if (eConc != null && skillMonitor.CanUseSkill(eConc))
-                return eConc;
-
-            return null;
-        }
-
-        private ActiveSkill FindSkill(List<ActiveSkill> skills, string skillName)
-        {
-            return skills.FirstOrDefault(x => x.Name == skillName);
+            return bestAction;
         }
     }
 }

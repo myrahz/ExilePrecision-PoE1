@@ -12,6 +12,7 @@ using ExilePrecision.Core.Events;
 using ExilePrecision.Core.Events.Events;
 using System;
 using System.Numerics;
+using System.Collections.Generic;
 
 namespace ExilePrecision.Routines.EConcRoutine
 {
@@ -20,19 +21,20 @@ namespace ExilePrecision.Routines.EConcRoutine
         private readonly TargetSelector _targetSelector;
         private readonly SkillPriority _skillPriority;
         private readonly LineOfSight _lineOfSight;
+        private readonly PriorityCalculator _priorityCalculator;
 
         public EConcRoutine(GameController gameController)
-            : base("EConc", gameController)
+            : base("EConcRoutine", gameController)
         {
             _lineOfSight = new LineOfSight(gameController);
 
             var entityScanner = new EntityScanner(gameController, _lineOfSight);
-            var priorityCalculator = new PriorityCalculator(gameController);
+            _priorityCalculator = new PriorityCalculator(gameController);
 
             _targetSelector = new TargetSelector(
                 gameController,
                 entityScanner,
-                priorityCalculator,
+                _priorityCalculator,
                 _lineOfSight
             );
 
@@ -57,42 +59,48 @@ namespace ExilePrecision.Routines.EConcRoutine
             }
         }
 
-        protected override EntityInfo GetTarget()
+        protected override (ActiveSkill skill, EntityInfo target) GetBestAction()
         {
-            _targetSelector.Update();
-            var target = _targetSelector.GetCurrentTarget();
-            return target != null ? new EntityInfo(target, GameController) : null;
+            try
+            {
+                _targetSelector.Update(SkillHandler.GetAllSkills());
+                return _skillPriority.GetBestAction(
+                    SkillHandler.GetAllSkills(),
+                    _targetSelector,
+                    _priorityCalculator,
+                    SkillMonitor
+                );
+            }
+            catch (Exception ex)
+            {
+                LogError($"Error in GetBestAction: {ex.Message}");
+                return (null, null);
+            }
         }
 
-        protected override void ExecuteCombatTick()
+        protected override void ExecuteCombatTick(ActiveSkill skill, EntityInfo target)
         {
-            if (CurrentTarget == null) return;
-
-            var nextSkill = _skillPriority.GetNextSkill(
-                CurrentTarget,
-                SkillHandler.GetAllSkills(),
-                SkillMonitor);
-
-            if (nextSkill != null)
+            try
             {
-                var screenPos = CurrentTarget.ScreenPos;
+                if (target == null || skill == null) return;
+
+                var screenPos = target.ScreenPos;
                 if (screenPos != Vector2.Zero)
                 {
                     using (Input.InputManager.BlockUserMouseInput())
                     {
-                        //Input.InputManager.MoveMouse(screenPos);
-                        ExileCore.Input.SetCursorPos(screenPos);
+                        Input.InputManager.MoveMouse(screenPos);
+                        //if (IsCursorOnTarget(target)) // doesnt really matter for EConcRoutine Strike
                         {
-                            //ExileCore.Input.SetCursorPos(screenPos);
-
-                            //if (IsCursorOnTarget(CurrentTarget))
-                            {
-                                SkillMonitor.TrackUse(nextSkill);
-                                SkillHandler.UseSkill(nextSkill.Name);
-                            }
+                            SkillMonitor.TrackUse(skill);
+                            SkillHandler.UseSkill(skill.Name);
                         }
                     }
                 }
+            }
+            catch (Exception ex)
+            {
+                LogError($"Error in ExecuteCombatTick: {ex.Message}");
             }
         }
 
@@ -123,7 +131,7 @@ namespace ExilePrecision.Routines.EConcRoutine
             {
                 var eventBus = EventBus.Instance;
                 eventBus.Unsubscribe<RenderEvent>(HandleRender);
-                _targetSelector?.Clear();
+                _targetSelector?.Dispose();
             }
             base.Dispose(disposing);
         }

@@ -123,15 +123,21 @@ namespace ExilePrecision
                 bool shouldAttack = false;
                 if (Settings.AttackWhenLeaderIsAttacking)
                 {
-                    var leaderEntity = GameController.EntityListWrapper.ValidEntitiesByType[EntityType.Player].FirstOrDefault(x => string.Equals(x.GetComponent<Player>()?.PlayerName.ToLower(), Settings.LeaderName, StringComparison.OrdinalIgnoreCase));
-                    var leaderAnimation = leaderEntity.GetComponent<Actor>().Animation;
-                    var leaderIsAttacking = leaderEntity.GetComponent<Actor>().isAttacking;
-                    var distanceToLeader = leaderEntity.DistancePlayer;
+                    var leaderEntity = GameController.EntityListWrapper?.ValidEntitiesByType?.GetValueOrDefault(EntityType.Player)?
+                    .FirstOrDefault(x => string.Equals(x?.GetComponent<Player>()?.PlayerName?.ToLower(),
+                                      Settings.LeaderName.Value.ToLower(),
+                                      StringComparison.OrdinalIgnoreCase));
 
-                    if (distanceToLeader < Settings.DistanceToLeaderToAttack)
+                    var actorComponent = leaderEntity?.GetComponent<Actor>();
+                    if (actorComponent != null && leaderEntity.DistancePlayer < Settings.DistanceToLeaderToAttack)
                     {
-                        shouldAttack = leaderIsAttacking && !(leaderAnimation == AnimationE.LeapSlam || leaderAnimation == AnimationE.LeapSlamOffhand || leaderAnimation == AnimationE.Charge || leaderAnimation == AnimationE.ChargeEnd);
-
+                        var leaderAnimation = actorComponent.Animation;
+                        var leaderIsAttacking = actorComponent.isAttacking;
+                        shouldAttack = leaderIsAttacking &&
+                                       !(leaderAnimation == AnimationE.LeapSlam ||
+                                         leaderAnimation == AnimationE.LeapSlamOffhand ||
+                                         leaderAnimation == AnimationE.Charge ||
+                                         leaderAnimation == AnimationE.ChargeEnd);
                     }
 
 
